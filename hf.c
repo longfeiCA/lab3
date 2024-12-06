@@ -15,6 +15,13 @@ FILE *disk;
 char buffer[BLOCK_SIZE];
 char current_directory[5] = ".";
 
+// Forward declarations
+bool check_consistency();
+int find_free_blocks(int size);
+bool is_block_used(int block);
+void mark_blocks_used(int start, int size);
+void mark_blocks_free(int start, int size);
+
 void fs_mount(char *new_disk_name) {
     disk = fopen(new_disk_name, "rb+");
     if (disk == NULL) {
@@ -425,7 +432,7 @@ int main(int argc, char *argv[]) {
             fscanf(input, "%s", name);
             fs_cd(name);
         } else {
-            fprintf(stderr, "Command Error: %s, %d\n", argv[1], ftell(input) / sizeof(command));
+            fprintf(stderr, "Command Error: %s, %ld\n", argv[1], ftell(input) / sizeof(command));
         }
     }
 
