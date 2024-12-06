@@ -43,35 +43,40 @@ void fs_mount(char *new_disk_name) {
 
     for (int i = 0; i < NUM_INODES; i++) {
         Inode *inode = &superblock.inode[i];
-        if ((inode->used_size & 0x80) == 0) {
+        if ((inode->used_size & 0x80) == 0) { // Inode is free
             if (inode->used_size != 0 || inode->start_block != 0 || inode->dir_parent != 127) {
                 is_consistent = false;
                 error_code = 1;
+                fprintf(stderr, "Inode %d is free but not all bits are zero: used_size = %d, start_block = %d, dir_parent = %d\n", i, inode->used_size, inode->start_block, inode->dir_parent);
                 break;
             }
-        } else {
+        } else { // Inode is in use
             if ((inode->dir_parent & 0x80) == 0) { // File
                 if (inode->start_block < 1 || inode->start_block > 127 || inode->used_size > 127) {
                     is_consistent = false;
                     error_code = 2;
+                    fprintf(stderr, "Inode %d (file) has invalid start_block or size: start_block = %d, used_size = %d\n", i, inode->start_block, inode->used_size);
                     break;
                 }
             } else { // Directory
                 if (inode->start_block != 0 || inode->used_size != 0) {
                     is_consistent = false;
                     error_code = 3;
+                    fprintf(stderr, "Inode %d (directory) has invalid start_block or size: start_block = %d, used_size = %d\n", i, inode->start_block, inode->used_size);
                     break;
                 }
             }
             if (inode->dir_parent == 126 || (inode->dir_parent < 127 && (superblock.inode[inode->dir_parent].used_size & 0x80) == 0)) {
                 is_consistent = false;
                 error_code = 4;
+                fprintf(stderr, "Inode %d has invalid parent inode: dir_parent = %d\n", i, inode->dir_parent);
                 break;
             }
             for (int j = 0; j < i; j++) {
                 if (strcmp(superblock.inode[j].name, inode->name) == 0) {
                     is_consistent = false;
                     error_code = 5;
+                    fprintf(stderr, "Inode %d has a duplicate name: name = %s\n", i, inode->name);
                     break;
                 }
             }
@@ -85,6 +90,7 @@ void fs_mount(char *new_disk_name) {
                 if (superblock.inode[j].start_block <= i && i < superblock.inode[j].start_block + (superblock.inode[j].used_size & 0x7F)) {
                     is_consistent = false;
                     error_code = 6;
+                    fprintf(stderr, "Block %d is marked free but allocated to inode %d\n", i, j);
                     break;
                 }
             }
