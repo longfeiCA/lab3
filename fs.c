@@ -335,6 +335,9 @@ void fs_create(char name[5], int size) {
             free_blocks++;
             if (free_blocks == size) {
                 break; // Found enough space
+            } else if (i == 127) {
+                start_block = -1;
+                free_blocks = 0;
             }
         } else {
             start_block = -1;
@@ -507,11 +510,6 @@ void fs_write(char name[5], int block_num) {
     // Calculate the block's position on disk
     int start_block = inode->start_block;
     int block_to_write = start_block + block_num;
-
-    // Prompt the user for data to write
-    printf("Enter data to write to block %d of file %s (max 1024 characters):\n", block_num, name);
-    char buffer[1024] = {0}; // Initialize buffer to zero
-    fgets(buffer, 1024, stdin); // Read user input
 
     // Write the data to the specified block
     fseek(disk, block_to_write * 1024, SEEK_SET);
