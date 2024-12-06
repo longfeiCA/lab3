@@ -112,7 +112,11 @@ void execute_command(const char *line, const char *input_file, int line_num) {
                 handle_error(input_file, line_num);
                 return;
             }
-            fs_buff((uint8_t *)arg1);
+            // Truncate arg1 to 1024 bytes
+            char truncated_buffer[1024];
+            strncpy(truncated_buffer, arg1, 1023);
+            truncated_buffer[1023] = '\0'; // Ensure null-termination
+            fs_buff((uint8_t *)truncated_buffer);
             break;
 
         case 'L': // List
