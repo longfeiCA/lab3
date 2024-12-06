@@ -11,11 +11,6 @@
 #define NUM_BLOCKS 128
 #define NUM_INODES 126
 
-typedef struct {
-    char free_block_list[16];
-    Inode inode[NUM_INODES];
-} Superblock;
-
 Superblock superblock;
 char disk[DISK_SIZE];
 char buffer[BLOCK_SIZE];
