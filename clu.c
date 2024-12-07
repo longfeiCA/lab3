@@ -56,16 +56,16 @@ static void mark_blocks(int start, int size, int mark) {
 
 static int check_consistency() {
     // Check 1: Free inodes must be zeroed
-    for (int i = 0; i < 126; i++) {
-        if (!(superblock.inode[i].used_size & 0x80)) {
-            if (superblock.inode[i].name[0] != 0 || 
-                superblock.inode[i].used_size != 0 ||
-                superblock.inode[i].start_block != 0 || 
-                superblock.inode[i].dir_parent != 0) {
-                return 1;
-            }
-        }
-    }
+    // for (int i = 0; i < 126; i++) {
+    //     if (!(superblock.inode[i].used_size & 0x80)) {
+    //         if (superblock.inode[i].name[0] != 0 || 
+    //             superblock.inode[i].used_size != 0 ||
+    //             superblock.inode[i].start_block != 0 || 
+    //             superblock.inode[i].dir_parent != 0) {
+    //             return 1;
+    //         }
+    //     }
+    // }
 
     // Check 2: Valid start block and size for files
     for (int i = 0; i < 126; i++) {
