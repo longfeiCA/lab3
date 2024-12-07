@@ -54,18 +54,37 @@ static void mark_blocks(int start, int size, int mark) {
     }
 }
 
+static int compare_inode_names(const char* name1, const char* name2) {
+    for (int i = 0; i < 5; i++) {
+        if (name1[i] != name2[i]) return 0;
+        if (name1[i] == '\0') return 1;  // Both names end here
+    }
+    return 1;  // All 5 chars match
+}
+
 static int check_consistency() {
     // Check 1: Free inodes must be zeroed
-    for (int i = 0; i < 126; i++) {
-        if (!(superblock.inode[i].used_size & 0x80)) {
-            if (superblock.inode[i].name[0] != 0 || 
-                superblock.inode[i].used_size != 0 ||
-                superblock.inode[i].start_block != 0 || 
-                superblock.inode[i].dir_parent != 0) {
-                return 1;
+for (int i = 0; i < 126; i++) {
+    if (!(superblock.inode[i].used_size & 0x80)) {
+        // If inode is free, all bits must be zero
+        if (superblock.inode[i].name[0] != 0 || 
+            superblock.inode[i].used_size != 0 ||
+            superblock.inode[i].start_block != 0 || 
+            superblock.inode[i].dir_parent != 0) {
+            return 1;
+        }
+    } else {
+        // If inode is in use, name must have at least one non-zero bit
+        int has_non_zero = 0;
+        for (int j = 0; j < 5; j++) {
+            if (superblock.inode[i].name[j] != 0) {
+                has_non_zero = 1;
+                break;
             }
         }
+        if (!has_non_zero) return 1;
     }
+}
 
     // Check 2: Valid start block and size for files
     for (int i = 0; i < 126; i++) {
@@ -127,28 +146,33 @@ static int check_consistency() {
     }
 
     // Check 6: Block allocation consistency
+    int block_usage[128] = {0};  // Count how many files use each block
+    // First, count block usage by files
+    for (int i = 0; i < 126; i++) {
+        if ((superblock.inode[i].used_size & 0x80) && 
+            !(superblock.inode[i].dir_parent & 0x80)) {
+            int start = superblock.inode[i].start_block;
+            int size = superblock.inode[i].used_size & 0x7F;
+            
+            for (int b = start; b < start + size; b++) {
+                if (b < 1 || b >= 128) continue;  // Skip invalid blocks
+                block_usage[b]++;
+            }
+        }
+    }
+
+    // Then verify against free-space list
     for (int i = 1; i < 128; i++) {
         int byte_idx = i / 8;
         int bit_idx = i % 8;
-        int block_used = (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
-        int found = 0;
+        int block_marked_used = (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
         
-        for (int j = 0; j < 126; j++) {
-            if ((superblock.inode[j].used_size & 0x80) && 
-                !(superblock.inode[j].dir_parent & 0x80)) {
-                int start = superblock.inode[j].start_block;
-                int size = superblock.inode[j].used_size & 0x7F;
-                
-                if (i >= start && i < start + size) {
-                    found++;
-                }
-            }
-        }
-        
-        if ((found > 0 && !block_used) || (found == 0 && block_used)) {
+        // Block must be marked used if and only if exactly one file uses it
+        if ((block_usage[i] > 0 && !block_marked_used) || 
+            (block_usage[i] == 0 && block_marked_used) ||
+            block_usage[i] > 1) {
             return 6;
         }
-        if (found > 1) return 6;
     }
 
     return 0;
@@ -200,7 +224,7 @@ void fs_create(char name[5], int size) {
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode) {
-            if (strncmp(superblock.inode[i].name, name, 5) == 0) {
+            if (compare_inode_names(superblock.inode[i].name, name)) {
                 fprintf(stderr, "Error: File or directory %s already exists\n", name);
                 return;
             }
@@ -243,7 +267,7 @@ void fs_delete(char name[5], int inode_idx) {
     for (int i = 0; i < 126 && !found; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
-            strncmp(superblock.inode[i].name, name, 5) == 0) {
+            compare_inode_names(superblock.inode[i].name, name)) {
             
             // If directory, recursively delete contents
             if (superblock.inode[i].dir_parent & 0x80) {
@@ -288,7 +312,7 @@ void fs_read(char name[5], int block_num) {
         if ((superblock.inode[i].used_size & 0x80) && 
             !(superblock.inode[i].dir_parent & 0x80) &&
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
-            strncmp(superblock.inode[i].name, name, 5) == 0) {
+            compare_inode_names(superblock.inode[i].name, name)) {
             
             int size = superblock.inode[i].used_size & 0x7F;
             if (block_num < 0 || block_num >= size) {
@@ -322,7 +346,7 @@ void fs_write(char name[5], int block_num) {
         if ((superblock.inode[i].used_size & 0x80) && 
             !(superblock.inode[i].dir_parent & 0x80) &&
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
-            strncmp(superblock.inode[i].name, name, 5) == 0) {
+            compare_inode_names(superblock.inode[i].name, name)) {
             
             int size = superblock.inode[i].used_size & 0x7F;
             if (block_num < 0 || block_num >= size) {
@@ -415,7 +439,7 @@ void fs_resize(char name[5], int new_size) {
         if ((superblock.inode[i].used_size & 0x80) && 
             !(superblock.inode[i].dir_parent & 0x80) &&
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
-            strncmp(superblock.inode[i].name, name, 5) == 0) {
+            compare_inode_names(superblock.inode[i].name, name)) {
             
             int current_size = superblock.inode[i].used_size & 0x7F;
             int start_block = superblock.inode[i].start_block;
@@ -598,7 +622,7 @@ void fs_cd(char name[5]) {
         if ((superblock.inode[i].used_size & 0x80) && 
             (superblock.inode[i].dir_parent & 0x80) &&
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
-            strncmp(superblock.inode[i].name, name, 5) == 0) {
+            compare_inode_names(superblock.inode[i].name, name)) {
             current_dir_inode = i;
             found = 1;
         }
