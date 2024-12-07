@@ -11,7 +11,18 @@ static char buffer[1024];
 static char* current_disk = NULL;
 static int current_dir_inode = 0;  // Root directory inode index
 
-// Helper functions
+// Helper functions declarations
+static int get_block_bit(int block_num);
+static void set_block_bit(int block_num, int value);
+static int find_free_inode(void);
+static int find_contiguous_blocks(int size);
+static void mark_blocks(int start, int size, int mark);
+static int compare_inode_names(const char* name1, const char* name2);
+static void write_superblock(void);
+static int check_consistency(void);
+static void clean_name(char* name);
+
+// Helper function implementations
 static int find_free_inode() {
     for (int i = 0; i < 126; i++) {
         if (!(superblock.inode[i].used_size & 0x80)) {
