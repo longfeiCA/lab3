@@ -98,8 +98,7 @@ static int check_consistency() {
     for (int i = 0; i < 126; i++) {
         if (!(superblock.inode[i].used_size & 0x80)) {
             // If inode is free, all bits must be zero
-            if (superblock.inode[i].name[0] != 0 || 
-                superblock.inode[i].used_size != 0 ||
+            if (superblock.inode[i].used_size != 0 ||
                 superblock.inode[i].start_block != 0 || 
                 superblock.inode[i].dir_parent != 0) {
                 return 1;
@@ -180,6 +179,8 @@ static int check_consistency() {
             !(superblock.inode[i].dir_parent & 0x80)) {
             int start = superblock.inode[i].start_block;
             int size = superblock.inode[i].used_size & 0x7F;
+
+            if (start < 1 || start + size > 128) continue;
             
             for (int b = start; b < start + size; b++) {
                 block_usage[b]++;
@@ -187,22 +188,21 @@ static int check_consistency() {
         }
     }
     
-    // Verify against free-space list
-    for (int i = 1; i < 128; i++) {  // Start from 1 to skip superblock
+    // Compare with free-block list
+    for (int i = 0; i < 128; i++) {
         int byte_idx = i / 8;
         int bit_idx = i % 8;
         int is_marked_used = (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
-        
-        // Block marked as used must be used by exactly one file
-        // Block marked as free must not be used by any file
-        if (is_marked_used) {
-            if (block_usage[i] != 1) return 6;
-        } else {
-            if (block_usage[i] != 0) return 6;
+
+        if (i == 0) {  // Superblock must be marked used
+            if (!is_marked_used) return 6;
+        } else {  // Other blocks
+            if (is_marked_used && block_usage[i] != 1) return 6;  // Marked used but not used by exactly one file
+            if (!is_marked_used && block_usage[i] != 0) return 6;  // Marked free but used by some file
         }
     }
 
-    return 0;
+    return 0;  // File system is consistent
 }
 
 void fs_mount(char *new_disk_name) {
