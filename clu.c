@@ -93,7 +93,6 @@ static void write_superblock() {
     }
 }
 
-
 static int check_consistency() {
     // Check 1: Free inodes must be zeroed
     for (int i = 0; i < 126; i++) {
@@ -344,65 +343,6 @@ void fs_delete(char name[5], int inode_idx) {
 
     // Zero out inode
     memset(&superblock.inode[target_inode], 0, sizeof(Inode));
-
-    // Write superblock back to disk
-    FILE *disk = fopen(current_disk, "r+b");
-    if (disk) {
-        fwrite(&superblock, sizeof(Superblock), 1, disk);
-        fclose(disk);
-    }
-}
-
-void fs_create(char name[5], int size) {
-    if (!current_disk) {
-        fprintf(stderr, "Error: No file system is mounted\n");
-        return;
-    }
-
-    // Find free inode
-    int inode_idx = find_free_inode();
-    if (inode_idx == -1) {
-        fprintf(stderr, "Error: Superblock in disk %s is full, cannot create %s\n", 
-                current_disk, name);
-        return;
-    }
-
-    // Check name uniqueness in current directory
-    for (int i = 0; i < 126; i++) {
-        if ((superblock.inode[i].used_size & 0x80) && 
-            (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
-            compare_inode_names(superblock.inode[i].name, name)) {
-            fprintf(stderr, "Error: File or directory %s already exists\n", name);
-            return;
-        }
-    }
-
-    // For files, find contiguous blocks
-    int start_block = 0;
-    if (size > 0) {
-        start_block = find_contiguous_blocks(size);
-        if (start_block == -1) {
-            fprintf(stderr, "Error: Cannot allocate %d blocks on %s\n", size, current_disk);
-            return;
-        }
-    }
-
-    // Initialize inode
-    memset(&superblock.inode[inode_idx], 0, sizeof(Inode));
-    strncpy(superblock.inode[inode_idx].name, name, 5);
-    superblock.inode[inode_idx].used_size = 0x80 | (size & 0x7F);  // Mark as used and set size
-    superblock.inode[inode_idx].start_block = start_block;
-    superblock.inode[inode_idx].dir_parent = (size == 0 ? 0x80 : 0) | 
-                                           (current_dir_inode == 0 ? 127 : current_dir_inode);
-
-    // Mark blocks as used in free-space list
-    if (size > 0) {
-        for (int i = start_block; i < start_block + size; i++) {
-            int byte_idx = i / 8;
-            int bit_idx = i % 8;
-            superblock.free_block_list[byte_idx] |= (1 << bit_idx);
-        }
-    }
 
     // Write superblock back to disk
     FILE *disk = fopen(current_disk, "r+b");
