@@ -12,7 +12,7 @@ typedef struct {
 
 void fs_mount(char *new_disk_name);
 void fs_create(char name[5], int size);
-void fs_delete(char name[5]);
+void fs_delete(char name[5], int inode_idx);
 void fs_read(char name[5], int block_num);
 void fs_write(char name[5], int block_num);
 void fs_buff(char buff[1024]);
