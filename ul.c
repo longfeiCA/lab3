@@ -502,7 +502,7 @@ void fs_write(char name[5], int block_num) {
 }
 
 
-void fs_buff(uint8_t buff[1024]) {
+void fs_buff(char buff[1024]) {
     // Zero out the buffer
     memset(buff, 0, 1024);
 
