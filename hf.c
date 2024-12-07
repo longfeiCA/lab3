@@ -14,6 +14,8 @@ Superblock superblock;
 FILE *disk;
 char buffer[BLOCK_SIZE];
 char current_directory[5] = ".";
+char current_disk[100];
+bool is_mounted = false;
 
 // Forward declarations
 bool check_consistency();
@@ -23,103 +25,185 @@ void mark_blocks_used(int start, int size);
 void mark_blocks_free(int start, int size);
 
 void fs_mount(char *new_disk_name) {
+    // Close the current disk if already mounted
+    if (disk != NULL) {
+        fclose(disk);
+        disk = NULL;
+    }
+
+    // Attempt to open the new disk file
     disk = fopen(new_disk_name, "rb+");
     if (disk == NULL) {
         fprintf(stderr, "Error: Cannot find disk %s\n", new_disk_name);
         return;
     }
 
-    fread(&superblock, sizeof(Superblock), 1, disk);
-    if (check_consistency()) {
+    // Read the superblock from the disk
+    if (fread(&superblock, sizeof(Superblock), 1, disk) != 1) {
+        fprintf(stderr, "Error: Failed to read superblock from disk %s\n", new_disk_name);
         fclose(disk);
         disk = NULL;
-        fprintf(stderr, "Error: File system in %s is inconsistent (error code: %d)\n", new_disk_name, check_consistency());
         return;
     }
 
-    strcpy(current_directory, ".");
+    // Perform consistency checks on the file system
+    for (int i = 0; i < 126; i++) {
+        Inode *inode = &superblock.inode[i];
+
+        // Check for inconsistency based on provided rules
+        if (!(inode->used_size & 0x80)) { // Unused inode
+            if (inode->name[0] != '\0' || inode->start_block != 0 || inode->dir_parent != 0) {
+                fprintf(stderr, "Error: File system in %s is inconsistent (error code: 1)\n", new_disk_name);
+                fclose(disk);
+                disk = NULL;
+                return;
+            }
+        } else { // Used inode
+            // Check start_block range for files
+            if (!(inode->dir_parent & 0x80) && (inode->start_block < 1 || inode->start_block > 127)) {
+                fprintf(stderr, "Error: File system in %s is inconsistent (error code: 2)\n", new_disk_name);
+                fclose(disk);
+                disk = NULL;
+                return;
+            }
+
+            // Check size validity for files
+            uint8_t size = inode->used_size & 0x7F; // Extract size (last 7 bits)
+            if (!(inode->dir_parent & 0x80) && (inode->start_block + size - 1 > 127)) {
+                fprintf(stderr, "Error: File system in %s is inconsistent (error code: 2)\n", new_disk_name);
+                fclose(disk);
+                disk = NULL;
+                return;
+            }
+
+            // Check directories for start_block and size = 0
+            if ((inode->dir_parent & 0x80) && (inode->start_block != 0 || size != 0)) {
+                fprintf(stderr, "Error: File system in %s is inconsistent (error code: 3)\n", new_disk_name);
+                fclose(disk);
+                disk = NULL;
+                return;
+            }
+
+            // Validate parent inode index
+            uint8_t parent_index = inode->dir_parent & 0x7F;
+            if (parent_index == 126 || (parent_index < 126 && !(superblock.inode[parent_index].used_size & 0x80))) {
+                fprintf(stderr, "Error: File system in %s is inconsistent (error code: 4)\n", new_disk_name);
+                fclose(disk);
+                disk = NULL;
+                return;
+            }
+        }
+    }
+
+    // Check for unique file/directory names within each directory
+    for (int i = 0; i < 126; i++) {
+        if (!(superblock.inode[i].used_size & 0x80)) continue;
+
+        for (int j = i + 1; j < 126; j++) {
+            if (!(superblock.inode[j].used_size & 0x80)) continue;
+
+            if ((superblock.inode[i].dir_parent & 0x7F) == (superblock.inode[j].dir_parent & 0x7F) &&
+                strncmp(superblock.inode[i].name, superblock.inode[j].name, 5) == 0) {
+                fprintf(stderr, "Error: File system in %s is inconsistent (error code: 5)\n", new_disk_name);
+                fclose(disk);
+                disk = NULL;
+                return;
+            }
+        }
+    }
+
+    // Check the free-space list for discrepancies
+    char block_usage[128] = {0};
+    for (int i = 0; i < 126; i++) {
+        if (!(superblock.inode[i].used_size & 0x80) || (superblock.inode[i].dir_parent & 0x80)) continue;
+
+        uint8_t start_block = superblock.inode[i].start_block;
+        uint8_t size = superblock.inode[i].used_size & 0x7F;
+        for (int j = 0; j < size; j++) {
+            if (block_usage[start_block + j] || superblock.free_block_list[(start_block + j) / 8] & (1 << ((start_block + j) % 8)) == 0) {
+                fprintf(stderr, "Error: File system in %s is inconsistent (error code: 6)\n", new_disk_name);
+                fclose(disk);
+                disk = NULL;
+                return;
+            }
+            block_usage[start_block + j] = 1;
+        }
+    }
+
+    // Set current working directory to root
+    current_directory[0] = '.';
+    current_directory[1] = '\0';
+
+    // Update current disk name
+    strncpy(current_disk, new_disk_name, sizeof(current_disk) - 1);
+    current_disk[sizeof(current_disk) - 1] = '\0';
+
+    is_mounted = true;
+
+    printf("File system successfully mounted on %s\n", new_disk_name);
 }
 
 bool check_consistency() {
-    // Check if free inodes are zero
-    for (int i = 0; i < NUM_INODES; i++) {
-        if ((superblock.inode[i].used_size & 0x80) == 0) {
-            if (superblock.inode[i].used_size != 0 || superblock.inode[i].start_block != 0 || superblock.inode[i].dir_parent != 127) {
+    for (int i = 0; i < 126; i++) {
+        Inode *inode = &superblock.inode[i];
+
+        if (!(inode->used_size & 0x80)) { // Unused inode
+            if (inode->name[0] != '\0' || inode->start_block != 0 || inode->dir_parent != 0) {
                 return 1;
             }
-        }
-    }
-
-    // Check start block and size of files
-    for (int i = 0; i < NUM_INODES; i++) {
-        if ((superblock.inode[i].used_size & 0x80) != 0 && (superblock.inode[i].dir_parent & 0x80) == 0) {
-            if (superblock.inode[i].start_block < 1 || superblock.inode[i].start_block > 127) {
+        } else { // Used inode
+            if (!(inode->dir_parent & 0x80) && (inode->start_block < 1 || inode->start_block > 127)) {
                 return 2;
             }
-            if (superblock.inode[i].used_size & 0x7F > 0 && superblock.inode[i].start_block + (superblock.inode[i].used_size & 0x7F) - 1 > 127) {
+
+            uint8_t size = inode->used_size & 0x7F; // Extract size (last 7 bits)
+            if (!(inode->dir_parent & 0x80) && (inode->start_block + size - 1 > 127)) {
                 return 2;
             }
-        }
-    }
 
-    // Check directories
-    for (int i = 0; i < NUM_INODES; i++) {
-        if ((superblock.inode[i].used_size & 0x80) != 0 && (superblock.inode[i].dir_parent & 0x80) != 0) {
-            if (superblock.inode[i].start_block != 0 || (superblock.inode[i].used_size & 0x7F) != 0) {
+            if ((inode->dir_parent & 0x80) && (inode->start_block != 0 || size != 0)) {
                 return 3;
             }
-        }
-    }
 
-    // Check parent inodes
-    for (int i = 0; i < NUM_INODES; i++) {
-        if ((superblock.inode[i].used_size & 0x80) != 0) {
-            if (superblock.inode[i].dir_parent == 126) {
+            uint8_t parent_index = inode->dir_parent & 0x7F;
+            if (parent_index == 126 || (parent_index < 126 && !(superblock.inode[parent_index].used_size & 0x80))) {
                 return 4;
             }
-            if (superblock.inode[i].dir_parent < 126) {
-                if ((superblock.inode[superblock.inode[i].dir_parent].used_size & 0x80) == 0 || (superblock.inode[superblock.inode[i].dir_parent].dir_parent & 0x80) == 0) {
-                    return 4;
-                }
+        }
+    }
+
+    for (int i = 0; i < 126; i++) {
+        if (!(superblock.inode[i].used_size & 0x80)) continue;
+
+        for (int j = i + 1; j < 126; j++) {
+            if (!(superblock.inode[j].used_size & 0x80)) continue;
+
+            if ((superblock.inode[i].dir_parent & 0x7F) == (superblock.inode[j].dir_parent & 0x7F) &&
+                strncmp(superblock.inode[i].name, superblock.inode[j].name, 5) == 0) {
+                return 5;
             }
         }
     }
 
-    // Check unique names
-    for (int i = 0; i < NUM_INODES; i++) {
-        if ((superblock.inode[i].used_size & 0x80) != 0) {
-            for (int j = i + 1; j < NUM_INODES; j++) {
-                if ((superblock.inode[j].used_size & 0x80) != 0 && superblock.inode[i].dir_parent == superblock.inode[j].dir_parent && strcmp(superblock.inode[i].name, superblock.inode[j].name) == 0) {
-                    return 5;
-                }
-            }
-        }
-    }
+    char block_usage[128] = {0};
+    for (int i = 0; i < 126; i++) {
+        if (!(superblock.inode[i].used_size & 0x80) || (superblock.inode[i].dir_parent & 0x80)) continue;
 
-    // Check free space list
-    for (int i = 1; i < NUM_BLOCKS; i++) {
-        bool is_free = (superblock.free_block_list[i / 8] & (1 << (i % 8))) == 0;
-        bool is_used = false;
-        for (int j = 0; j < NUM_INODES; j++) {
-            if ((superblock.inode[j].used_size & 0x80) != 0 && (superblock.inode[j].dir_parent & 0x80) == 0) {
-                for (int k = 0; k < (superblock.inode[j].used_size & 0x7F); k++) {
-                    if (superblock.inode[j].start_block + k == i) {
-                        is_used = true;
-                        break;
-                    }
-                }
+        uint8_t start_block = superblock.inode[i].start_block;
+        uint8_t size = superblock.inode[i].used_size & 0x7F;
+        for (int j = 0; j < size; j++) {
+            if (block_usage[start_block + j] || superblock.free_block_list[(start_block + j) / 8] & (1 << ((start_block + j) % 8)) == 0) {
+                return 6;
             }
-            if (is_used) break;
+            block_usage[start_block + j] = 1;
         }
-        if (is_free && is_used) return 6;
-        if (!is_free && !is_used) return 6;
     }
 
     return 0;
 }
 
 void fs_create(char name[5], int size) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
@@ -149,7 +233,7 @@ void fs_create(char name[5], int size) {
                     superblock.inode[i].start_block = 0;
                     superblock.inode[i].dir_parent = 127;
                     strcpy(superblock.inode[i].name, "");
-                    fprintf(stderr, "Error: Cannot allocate %d blocks on %s\n", size, "disk0");
+                    fprintf(stderr, "Error: Cannot allocate %d blocks on %s\n", size, current_disk);
                     return;
                 }
                 superblock.inode[i].start_block = start_block;
@@ -193,7 +277,7 @@ void mark_blocks_free(int start, int size) {
 }
 
 void fs_delete(char name[5]) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
@@ -215,7 +299,7 @@ void fs_delete(char name[5]) {
 }
 
 void fs_read(char name[5], int block_num) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
@@ -239,7 +323,7 @@ void fs_read(char name[5], int block_num) {
 }
 
 void fs_write(char name[5], int block_num) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
@@ -268,7 +352,7 @@ void fs_buff(char buff[1024]) {
 }
 
 void fs_ls(void) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
@@ -288,7 +372,7 @@ void fs_ls(void) {
 }
 
 void fs_resize(char name[5], int new_size) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
@@ -329,7 +413,7 @@ void fs_resize(char name[5], int new_size) {
 }
 
 void fs_defrag(void) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
@@ -358,7 +442,7 @@ void fs_defrag(void) {
 }
 
 void fs_cd(char name[5]) {
-    if (disk == NULL) {
+    if (!is_mounted) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
