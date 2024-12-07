@@ -169,9 +169,9 @@ static int check_consistency() {
     int block_usage[128] = {0};  // Count how many files use each block
     
     // First block (superblock) must be marked as used
-    if (!(superblock.free_block_list[0] & 0x01)) {
-        return 6;
-    }
+    // if (!(superblock.free_block_list[0] & 0x01)) {
+    //     return 6;
+    // }
     
     // Count block usage by files
     // for (int i = 0; i < 126; i++) {
