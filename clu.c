@@ -54,37 +54,59 @@ static void mark_blocks(int start, int size, int mark) {
     }
 }
 
+// Helper function to compare file/directory names
 static int compare_inode_names(const char* name1, const char* name2) {
     for (int i = 0; i < 5; i++) {
-        if (name1[i] != name2[i]) return 0;
-        if (name1[i] == '\0') return 1;  // Both names end here
+        if (name1[i] != name2[i]) {
+            return 0;
+        }
+        if (name1[i] == '\0' && name2[i] == '\0') {
+            return 1;
+        }
     }
-    return 1;  // All 5 chars match
+    return 1;  // Both names used all 5 characters
 }
+
+// Helper functions for bit manipulation
+static void set_block_bit(int block_num, int value) {
+    int byte_idx = block_num / 8;
+    int bit_idx = block_num % 8;
+    if (value) {
+        superblock.free_block_list[byte_idx] |= (1 << bit_idx);
+    } else {
+        superblock.free_block_list[byte_idx] &= ~(1 << bit_idx);
+    }
+}
+
+static int get_block_bit(int block_num) {
+    int byte_idx = block_num / 8;
+    int bit_idx = block_num % 8;
+    return (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
+}
+
+// Helper function to write superblock to disk
+static void write_superblock() {
+    FILE *disk = fopen(current_disk, "r+b");
+    if (disk) {
+        fwrite(&superblock, sizeof(Superblock), 1, disk);
+        fclose(disk);
+    }
+}
+
 
 static int check_consistency() {
     // Check 1: Free inodes must be zeroed
-for (int i = 0; i < 126; i++) {
-    if (!(superblock.inode[i].used_size & 0x80)) {
-        // If inode is free, all bits must be zero
-        if (superblock.inode[i].name[0] != 0 || 
-            superblock.inode[i].used_size != 0 ||
-            superblock.inode[i].start_block != 0 || 
-            superblock.inode[i].dir_parent != 0) {
-            return 1;
-        }
-    } else {
-        // If inode is in use, name must have at least one non-zero bit
-        int has_non_zero = 0;
-        for (int j = 0; j < 5; j++) {
-            if (superblock.inode[i].name[j] != 0) {
-                has_non_zero = 1;
-                break;
+    for (int i = 0; i < 126; i++) {
+        if (!(superblock.inode[i].used_size & 0x80)) {
+            // If inode is free, all bits must be zero
+            if (superblock.inode[i].name[0] != 0 || 
+                superblock.inode[i].used_size != 0 ||
+                superblock.inode[i].start_block != 0 || 
+                superblock.inode[i].dir_parent != 0) {
+                return 1;
             }
         }
-        if (!has_non_zero) return 1;
     }
-}
 
     // Check 2: Valid start block and size for files
     for (int i = 0; i < 126; i++) {
@@ -147,7 +169,13 @@ for (int i = 0; i < 126; i++) {
 
     // Check 6: Block allocation consistency
     int block_usage[128] = {0};  // Count how many files use each block
-    // First, count block usage by files
+    
+    // First block (superblock) must be marked as used
+    if (!(superblock.free_block_list[0] & 0x01)) {
+        return 6;
+    }
+    
+    // Count block usage by files
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
             !(superblock.inode[i].dir_parent & 0x80)) {
@@ -155,23 +183,23 @@ for (int i = 0; i < 126; i++) {
             int size = superblock.inode[i].used_size & 0x7F;
             
             for (int b = start; b < start + size; b++) {
-                if (b < 1 || b >= 128) continue;  // Skip invalid blocks
                 block_usage[b]++;
             }
         }
     }
-
-    // Then verify against free-space list
-    for (int i = 1; i < 128; i++) {
+    
+    // Verify against free-space list
+    for (int i = 1; i < 128; i++) {  // Start from 1 to skip superblock
         int byte_idx = i / 8;
         int bit_idx = i % 8;
-        int block_marked_used = (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
+        int is_marked_used = (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
         
-        // Block must be marked used if and only if exactly one file uses it
-        if ((block_usage[i] > 0 && !block_marked_used) || 
-            (block_usage[i] == 0 && block_marked_used) ||
-            block_usage[i] > 1) {
-            return 6;
+        // Block marked as used must be used by exactly one file
+        // Block marked as free must not be used by any file
+        if (is_marked_used) {
+            if (block_usage[i] != 1) return 6;
+        } else {
+            if (block_usage[i] != 0) return 6;
         }
     }
 
@@ -263,74 +291,124 @@ void fs_delete(char name[5], int inode_idx) {
     }
 
     // Find the file/directory
-    int found = 0;
-    for (int i = 0; i < 126 && !found; i++) {
-        if ((superblock.inode[i].used_size & 0x80) && 
-            (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
-            compare_inode_names(superblock.inode[i].name, name)) {
-            
-            // If directory, recursively delete contents
-            if (superblock.inode[i].dir_parent & 0x80) {
-                for (int j = 0; j < 126; j++) {
-                    if ((superblock.inode[j].used_size & 0x80) && 
-                        (superblock.inode[j].dir_parent & 0x7F) == i) {
-                        fs_delete(superblock.inode[j].name, j);
-                    }
-                }
-            } else {
-                // Free blocks
-                int size = superblock.inode[i].used_size & 0x7F;
-                mark_blocks(superblock.inode[i].start_block, size, 0);
+    int target_inode = -1;
+    if (inode_idx >= 0) {
+        target_inode = inode_idx;
+    } else {
+        for (int i = 0; i < 126; i++) {
+            if ((superblock.inode[i].used_size & 0x80) && 
+                (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
+                compare_inode_names(superblock.inode[i].name, name)) {
+                target_inode = i;
+                break;
             }
-
-            // Zero out inode
-            memset(&superblock.inode[i], 0, sizeof(Inode));
-            found = 1;
         }
     }
 
-    if (!found) {
+    if (target_inode == -1) {
         fprintf(stderr, "Error: File or directory %s does not exist\n", name);
         return;
     }
 
+    // If directory, recursively delete contents
+    if (superblock.inode[target_inode].dir_parent & 0x80) {
+        for (int i = 0; i < 126; i++) {
+            if ((superblock.inode[i].used_size & 0x80) && 
+                (superblock.inode[i].dir_parent & 0x7F) == target_inode) {
+                fs_delete(superblock.inode[i].name, i);
+            }
+        }
+    } else {
+        // Free blocks
+        int start = superblock.inode[target_inode].start_block;
+        int size = superblock.inode[target_inode].used_size & 0x7F;
+        
+        // Mark blocks as free in free-space list
+        for (int i = start; i < start + size; i++) {
+            int byte_idx = i / 8;
+            int bit_idx = i % 8;
+            superblock.free_block_list[byte_idx] &= ~(1 << bit_idx);
+        }
+
+        // Zero out the blocks
+        FILE *disk = fopen(current_disk, "r+b");
+        if (disk) {
+            char zero_block[1024] = {0};
+            for (int i = start; i < start + size; i++) {
+                fseek(disk, i * 1024, SEEK_SET);
+                fwrite(zero_block, 1024, 1, disk);
+            }
+            fclose(disk);
+        }
+    }
+
+    // Zero out inode
+    memset(&superblock.inode[target_inode], 0, sizeof(Inode));
+
     // Write superblock back to disk
     FILE *disk = fopen(current_disk, "r+b");
-    fwrite(&superblock, sizeof(Superblock), 1, disk);
-    fclose(disk);
+    if (disk) {
+        fwrite(&superblock, sizeof(Superblock), 1, disk);
+        fclose(disk);
+    }
 }
 
-void fs_read(char name[5], int block_num) {
+void fs_create(char name[5], int size) {
     if (!current_disk) {
         fprintf(stderr, "Error: No file system is mounted\n");
         return;
     }
 
-    // Find the file
-    int found = 0;
-    for (int i = 0; i < 126 && !found; i++) {
+    // Find free inode
+    int inode_idx = find_free_inode();
+    if (inode_idx == -1) {
+        fprintf(stderr, "Error: Superblock in disk %s is full, cannot create %s\n", 
+                current_disk, name);
+        return;
+    }
+
+    // Check name uniqueness in current directory
+    for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
-            !(superblock.inode[i].dir_parent & 0x80) &&
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
             compare_inode_names(superblock.inode[i].name, name)) {
-            
-            int size = superblock.inode[i].used_size & 0x7F;
-            if (block_num < 0 || block_num >= size) {
-                fprintf(stderr, "Error: %s does not have block %d\n", name, block_num);
-                return;
-            }
-
-            // Read block into buffer
-            FILE *disk = fopen(current_disk, "rb");
-            fseek(disk, (superblock.inode[i].start_block + block_num) * 1024, SEEK_SET);
-            fread(buffer, 1024, 1, disk);
-            fclose(disk);
-            found = 1;
+            fprintf(stderr, "Error: File or directory %s already exists\n", name);
+            return;
         }
     }
 
-    if (!found) {
-        fprintf(stderr, "Error: File %s does not exist\n", name);
+    // For files, find contiguous blocks
+    int start_block = 0;
+    if (size > 0) {
+        start_block = find_contiguous_blocks(size);
+        if (start_block == -1) {
+            fprintf(stderr, "Error: Cannot allocate %d blocks on %s\n", size, current_disk);
+            return;
+        }
+    }
+
+    // Initialize inode
+    memset(&superblock.inode[inode_idx], 0, sizeof(Inode));
+    strncpy(superblock.inode[inode_idx].name, name, 5);
+    superblock.inode[inode_idx].used_size = 0x80 | (size & 0x7F);  // Mark as used and set size
+    superblock.inode[inode_idx].start_block = start_block;
+    superblock.inode[inode_idx].dir_parent = (size == 0 ? 0x80 : 0) | 
+                                           (current_dir_inode == 0 ? 127 : current_dir_inode);
+
+    // Mark blocks as used in free-space list
+    if (size > 0) {
+        for (int i = start_block; i < start_block + size; i++) {
+            int byte_idx = i / 8;
+            int bit_idx = i % 8;
+            superblock.free_block_list[byte_idx] |= (1 << bit_idx);
+        }
+    }
+
+    // Write superblock back to disk
+    FILE *disk = fopen(current_disk, "r+b");
+    if (disk) {
+        fwrite(&superblock, sizeof(Superblock), 1, disk);
+        fclose(disk);
     }
 }
 
@@ -379,7 +457,7 @@ void fs_ls(void) {
         return;
     }
 
-    // Print current directory (.)
+    // Count items in current directory
     int num_items = 0;
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
@@ -387,11 +465,13 @@ void fs_ls(void) {
             num_items++;
         }
     }
-    printf("%-5s %3d\n", ".", num_items + 2);
+
+    // Print current directory (.)
+    printf("%-5s %3d\n", ".", num_items + 2);  // +2 for . and ..
 
     // Print parent directory (..)
-    if (current_dir_inode == 0) {
-        printf("%-5s %3d\n", "..", num_items + 2);
+    if (current_dir_inode == 0) {  // Root directory
+        printf("%-5s %3d\n", "..", num_items + 2);  // Same as . for root
     } else {
         int parent_idx = superblock.inode[current_dir_inode].dir_parent & 0x7F;
         int parent_items = 0;
@@ -404,12 +484,11 @@ void fs_ls(void) {
         printf("%-5s %3d\n", "..", parent_items + 2);
     }
 
-    // Print files and directories
+    // Print files and directories in sorted order by inode index
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode) {
-            if (superblock.inode[i].dir_parent & 0x80) {
-                // Directory
+            if (superblock.inode[i].dir_parent & 0x80) {  // Directory
                 int dir_items = 0;
                 for (int j = 0; j < 126; j++) {
                     if ((superblock.inode[j].used_size & 0x80) && 
@@ -418,8 +497,7 @@ void fs_ls(void) {
                     }
                 }
                 printf("%-5s %3d\n", superblock.inode[i].name, dir_items + 2);
-            } else {
-                // File
+            } else {  // File
                 printf("%-5s %3d KB\n", superblock.inode[i].name, 
                        superblock.inode[i].used_size & 0x7F);
             }
@@ -434,93 +512,123 @@ void fs_resize(char name[5], int new_size) {
     }
 
     // Find the file
-    int found = 0;
-    for (int i = 0; i < 126 && !found; i++) {
+    int found = -1;
+    for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
             !(superblock.inode[i].dir_parent & 0x80) &&
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
             compare_inode_names(superblock.inode[i].name, name)) {
-            
-            int current_size = superblock.inode[i].used_size & 0x7F;
-            int start_block = superblock.inode[i].start_block;
+            found = i;
+            break;
+        }
+    }
 
-            if (new_size > current_size) {
-                // Try to expand in place
-                int can_expand = 1;
-                for (int b = start_block + current_size; 
-                     b < start_block + new_size && can_expand; b++) {
-                    int byte_idx = b / 8;
-                    int bit_idx = b % 8;
-                    if (superblock.free_block_list[byte_idx] & (1 << bit_idx)) {
-                        can_expand = 0;
-                    }
-                }
+    if (found == -1) {
+        fprintf(stderr, "Error: File %s does not exist\n", name);
+        return;
+    }
 
-                if (can_expand) {
-                    // Mark new blocks as used
-                    mark_blocks(start_block + current_size, new_size - current_size, 1);
-                } else {
-                    // Try to relocate file
-                    int new_start = find_contiguous_blocks(new_size);
-                    if (new_start == -1) {
-                        fprintf(stderr, "Error: File %s cannot expand to size %d\n", 
-                                name, new_size);
-                        return;
-                    }
+    int current_size = superblock.inode[found].used_size & 0x7F;
+    int start_block = superblock.inode[found].start_block;
 
-                    // Copy data to new location
-                    FILE *disk = fopen(current_disk, "r+b");
-                    char temp_buffer[1024];
-                    for (int b = 0; b < current_size; b++) {
-                        // Read old block
-                        fseek(disk, (start_block + b) * 1024, SEEK_SET);
-                        fread(temp_buffer, 1024, 1, disk);
-                        
-                        // Write to new block
-                        fseek(disk, (new_start + b) * 1024, SEEK_SET);
-                        fwrite(temp_buffer, 1024, 1, disk);
-                        
-                        // Zero out old block
-                        memset(temp_buffer, 0, 1024);
-                        fseek(disk, (start_block + b) * 1024, SEEK_SET);
-                        fwrite(temp_buffer, 1024, 1, disk);
-                    }
-                    fclose(disk);
+    if (new_size > current_size) {
+        // Check if we can expand in place
+        int can_expand = 1;
+        for (int i = start_block + current_size; i < start_block + new_size && can_expand; i++) {
+            if (i >= 128) {
+                can_expand = 0;
+                break;
+            }
+            int byte_idx = i / 8;
+            int bit_idx = i % 8;
+            if (superblock.free_block_list[byte_idx] & (1 << bit_idx)) {
+                can_expand = 0;
+            }
+        }
 
-                    // Update free block list
-                    mark_blocks(start_block, current_size, 0);
-                    mark_blocks(new_start, new_size, 1);
+        if (!can_expand) {
+            // Try to find new contiguous space
+            int new_start = find_contiguous_blocks(new_size);
+            if (new_start == -1) {
+                fprintf(stderr, "Error: File %s cannot expand to size %d\n", name, new_size);
+                return;
+            }
+
+            // Copy data to new location
+            FILE *disk = fopen(current_disk, "r+b");
+            if (disk) {
+                char block[1024];
+                // Copy existing blocks
+                for (int i = 0; i < current_size; i++) {
+                    // Read old block
+                    fseek(disk, (start_block + i) * 1024, SEEK_SET);
+                    fread(block, 1024, 1, disk);
                     
-                    // Update inode
-                    superblock.inode[i].start_block = new_start;
+                    // Write to new location
+                    fseek(disk, (new_start + i) * 1024, SEEK_SET);
+                    fwrite(block, 1024, 1, disk);
                 }
-            } else if (new_size < current_size) {
-                // Zero out freed blocks
-                FILE *disk = fopen(current_disk, "r+b");
-                char zero_buffer[1024] = {0};
-                for (int b = new_size; b < current_size; b++) {
-                    fseek(disk, (start_block + b) * 1024, SEEK_SET);
-                    fwrite(zero_buffer, 1024, 1, disk);
+
+                // Zero out old blocks
+                memset(block, 0, 1024);
+                for (int i = 0; i < current_size; i++) {
+                    fseek(disk, (start_block + i) * 1024, SEEK_SET);
+                    fwrite(block, 1024, 1, disk);
                 }
                 fclose(disk);
 
-                // Update free block list
-                mark_blocks(start_block + new_size, current_size - new_size, 0);
+                // Update free space list
+                // Mark old blocks as free
+                for (int i = start_block; i < start_block + current_size; i++) {
+                    int byte_idx = i / 8;
+                    int bit_idx = i % 8;
+                    superblock.free_block_list[byte_idx] &= ~(1 << bit_idx);
+                }
+
+                // Mark new blocks as used
+                for (int i = new_start; i < new_start + new_size; i++) {
+                    int byte_idx = i / 8;
+                    int bit_idx = i % 8;
+                    superblock.free_block_list[byte_idx] |= (1 << bit_idx);
+                }
+
+                superblock.inode[found].start_block = new_start;
             }
-
-            // Update inode size
-            superblock.inode[i].used_size = 0x80 | (new_size & 0x7F);
-            found = 1;
-
-            // Write superblock back to disk
-            FILE *disk = fopen(current_disk, "r+b");
-            fwrite(&superblock, sizeof(Superblock), 1, disk);
+        } else {
+            // Mark additional blocks as used
+            for (int i = start_block + current_size; i < start_block + new_size; i++) {
+                int byte_idx = i / 8;
+                int bit_idx = i % 8;
+                superblock.free_block_list[byte_idx] |= (1 << bit_idx);
+            }
+        }
+    } else if (new_size < current_size) {
+        // Free excess blocks
+        FILE *disk = fopen(current_disk, "r+b");
+        if (disk) {
+            // Zero out freed blocks
+            char zero_block[1024] = {0};
+            for (int i = start_block + new_size; i < start_block + current_size; i++) {
+                fseek(disk, i * 1024, SEEK_SET);
+                fwrite(zero_block, 1024, 1, disk);
+                
+                // Mark block as free
+                int byte_idx = i / 8;
+                int bit_idx = i % 8;
+                superblock.free_block_list[byte_idx] &= ~(1 << bit_idx);
+            }
             fclose(disk);
         }
     }
 
-    if (!found) {
-        fprintf(stderr, "Error: File %s does not exist\n", name);
+    // Update inode size
+    superblock.inode[found].used_size = 0x80 | (new_size & 0x7F);
+
+    // Write superblock back to disk
+    FILE *disk = fopen(current_disk, "r+b");
+    if (disk) {
+        fwrite(&superblock, sizeof(Superblock), 1, disk);
+        fclose(disk);
     }
 }
 
@@ -530,14 +638,16 @@ void fs_defrag(void) {
         return;
     }
 
-    // Sort files by start block
-    int file_count = 0;
+    // Create array of files sorted by start block
     struct FileInfo {
         int inode_idx;
         int start_block;
         int size;
-    } files[126];
+    };
+    struct FileInfo files[126];
+    int file_count = 0;
 
+    // Collect file information
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
             !(superblock.inode[i].dir_parent & 0x80)) {
@@ -548,7 +658,7 @@ void fs_defrag(void) {
         }
     }
 
-    // Bubble sort files by start block
+    // Sort files by start block
     for (int i = 0; i < file_count - 1; i++) {
         for (int j = 0; j < file_count - i - 1; j++) {
             if (files[j].start_block > files[j + 1].start_block) {
@@ -559,43 +669,61 @@ void fs_defrag(void) {
         }
     }
 
-    // Move files towards block 1
-    int next_free = 1;
+    // Move files toward beginning of disk
+    int next_free = 1;  // Start after superblock
     FILE *disk = fopen(current_disk, "r+b");
-    char buffer[1024];
+    if (disk) {
+        char block[1024];
+        
+        // Process each file
+        for (int i = 0; i < file_count; i++) {
+            if (files[i].start_block != next_free) {
+                // Read and write each block
+                for (int j = 0; j < files[i].size; j++) {
+                    // Read block
+                    fseek(disk, (files[i].start_block + j) * 1024, SEEK_SET);
+                    fread(block, 1024, 1, disk);
+                    
+                    // Write to new location
+                    fseek(disk, (next_free + j) * 1024, SEEK_SET);
+                    fwrite(block, 1024, 1, disk);
+                }
 
-    for (int i = 0; i < file_count; i++) {
-        if (files[i].start_block != next_free) {
-            // Copy file data
-            for (int b = 0; b < files[i].size; b++) {
-                // Read block
-                fseek(disk, (files[i].start_block + b) * 1024, SEEK_SET);
-                fread(buffer, 1024, 1, disk);
-                
-                // Write to new location
-                fseek(disk, (next_free + b) * 1024, SEEK_SET);
-                fwrite(buffer, 1024, 1, disk);
-                
-                // Zero out old block
-                memset(buffer, 0, 1024);
-                fseek(disk, (files[i].start_block + b) * 1024, SEEK_SET);
-                fwrite(buffer, 1024, 1, disk);
+                // Update free space list
+                for (int j = 0; j < files[i].size; j++) {
+                    // Mark old block as free
+                    int old_byte = (files[i].start_block + j) / 8;
+                    int old_bit = (files[i].start_block + j) % 8;
+                    superblock.free_block_list[old_byte] &= ~(1 << old_bit);
+
+                    // Mark new block as used
+                    int new_byte = (next_free + j) / 8;
+                    int new_bit = (next_free + j) % 8;
+                    superblock.free_block_list[new_byte] |= (1 << new_bit);
+                }
+
+                // Update inode
+                superblock.inode[files[i].inode_idx].start_block = next_free;
             }
-
-            // Update free block list
-            mark_blocks(files[i].start_block, files[i].size, 0);
-            mark_blocks(next_free, files[i].size, 1);
-            
-            // Update inode
-            superblock.inode[files[i].inode_idx].start_block = next_free;
+            next_free += files[i].size;
         }
-        next_free += files[i].size;
+        
+        // Zero out all blocks after the last file
+        char zero_block[1024] = {0};
+        for (int i = next_free; i < 128; i++) {
+            fseek(disk, i * 1024, SEEK_SET);
+            fwrite(zero_block, 1024, 1, disk);
+        }
+        
+        fclose(disk);
+        
+        // Write updated superblock
+        disk = fopen(current_disk, "r+b");
+        if (disk) {
+            fwrite(&superblock, sizeof(Superblock), 1, disk);
+            fclose(disk);
+        }
     }
-
-    // Write superblock back to disk
-    fseek(disk, 0, SEEK_SET);
-    fwrite(&superblock, sizeof(Superblock), 1, disk);
-    fclose(disk);
 }
 
 void fs_cd(char name[5]) {
@@ -606,31 +734,28 @@ void fs_cd(char name[5]) {
 
     // Handle special cases
     if (strcmp(name, ".") == 0) {
-        return;
+        return;  // Stay in current directory
     }
     
     if (strcmp(name, "..") == 0) {
-        if (current_dir_inode != 0) {
+        if (current_dir_inode != 0) {  // Not root directory
             current_dir_inode = superblock.inode[current_dir_inode].dir_parent & 0x7F;
         }
         return;
     }
 
-    // Find directory
-    int found = 0;
-    for (int i = 0; i < 126 && !found; i++) {
-        if ((superblock.inode[i].used_size & 0x80) && 
-            (superblock.inode[i].dir_parent & 0x80) &&
-            (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
+    // Look for directory in current directory
+    for (int i = 0; i < 126; i++) {
+        if ((superblock.inode[i].used_size & 0x80) &&  // Used inode
+            (superblock.inode[i].dir_parent & 0x80) &&  // Is a directory
+            (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&  // In current directory
             compare_inode_names(superblock.inode[i].name, name)) {
             current_dir_inode = i;
-            found = 1;
+            return;
         }
     }
 
-    if (!found) {
-        fprintf(stderr, "Error: Directory %s does not exist\n", name);
-    }
+    fprintf(stderr, "Error: Directory %s does not exist\n", name);
 }
 
 int main(int argc, char *argv[]) {
@@ -650,27 +775,33 @@ int main(int argc, char *argv[]) {
     
     while (fgets(line, sizeof(line), cmd_file)) {
         line_num++;
-        char cmd;
-        char arg1[256];
-        int arg2;
         
         // Remove newline
         line[strcspn(line, "\n")] = 0;
         
-        // Parse command
-        if (sscanf(line, "%c %s %d", &cmd, arg1, &arg2) < 1) {
-            continue;  // Empty line
+        // Skip empty lines
+        if (line[0] == '\0') continue;
+
+        char cmd = line[0];
+        char args[1024];
+        
+        // Extract arguments
+        if (strlen(line) > 2) {
+            strcpy(args, line + 2);
+        } else {
+            args[0] = '\0';
         }
 
-        // Process commands
         switch (cmd) {
-            case 'M':  // Mount
-                if (sscanf(line, "M %s", arg1) != 1) {
+            case 'M': {  // Mount
+                char disk_name[256];
+                if (sscanf(args, "%s", disk_name) != 1) {
                     fprintf(stderr, "Command Error: %s, %d\n", argv[1], line_num);
                     continue;
                 }
-                fs_mount(arg1);
+                fs_mount(disk_name);
                 break;
+            }
 
             case 'C':  // Create
                 {
