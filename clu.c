@@ -56,16 +56,16 @@ static void mark_blocks(int start, int size, int mark) {
 
 static int check_consistency() {
     // Check 1: Free inodes must be zeroed
-    // for (int i = 0; i < 126; i++) {
-    //     if (!(superblock.inode[i].used_size & 0x80)) {
-    //         if (superblock.inode[i].name[0] != 0 || 
-    //             superblock.inode[i].used_size != 0 ||
-    //             superblock.inode[i].start_block != 0 || 
-    //             superblock.inode[i].dir_parent != 0) {
-    //             return 1;
-    //         }
-    //     }
-    // }
+    for (int i = 0; i < 126; i++) {
+        if (!(superblock.inode[i].used_size & 0x80)) {
+            if (superblock.inode[i].name[0] != 0 || 
+                superblock.inode[i].used_size != 0 ||
+                superblock.inode[i].start_block != 0 || 
+                superblock.inode[i].dir_parent != 0) {
+                return 1;
+            }
+        }
+    }
 
     // Check 2: Valid start block and size for files
     for (int i = 0; i < 126; i++) {
@@ -127,29 +127,29 @@ static int check_consistency() {
     }
 
     // Check 6: Block allocation consistency
-    // for (int i = 1; i < 128; i++) {
-    //     int byte_idx = i / 8;
-    //     int bit_idx = i % 8;
-    //     int block_used = (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
-    //     int found = 0;
+    for (int i = 1; i < 128; i++) {
+        int byte_idx = i / 8;
+        int bit_idx = i % 8;
+        int block_used = (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
+        int found = 0;
         
-    //     for (int j = 0; j < 126; j++) {
-    //         if ((superblock.inode[j].used_size & 0x80) && 
-    //             !(superblock.inode[j].dir_parent & 0x80)) {
-    //             int start = superblock.inode[j].start_block;
-    //             int size = superblock.inode[j].used_size & 0x7F;
+        for (int j = 0; j < 126; j++) {
+            if ((superblock.inode[j].used_size & 0x80) && 
+                !(superblock.inode[j].dir_parent & 0x80)) {
+                int start = superblock.inode[j].start_block;
+                int size = superblock.inode[j].used_size & 0x7F;
                 
-    //             if (i >= start && i < start + size) {
-    //                 found++;
-    //             }
-    //         }
-    //     }
+                if (i >= start && i < start + size) {
+                    found++;
+                }
+            }
+        }
         
-    //     if ((found > 0 && !block_used) || (found == 0 && block_used)) {
-    //         return 6;
-    //     }
-    //     if (found > 1) return 6;
-    // }
+        if ((found > 0 && !block_used) || (found == 0 && block_used)) {
+            return 6;
+        }
+        if (found > 1) return 6;
+    }
 
     return 0;
 }
@@ -363,7 +363,7 @@ void fs_ls(void) {
             num_items++;
         }
     }
-    printf("%-5s %3d\n", ".", num_items + 2);  // +2 for . and ..
+    printf("%-5s %3d\n", ".", num_items + 2);
 
     // Print parent directory (..)
     if (current_dir_inode == 0) {
