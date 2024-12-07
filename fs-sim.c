@@ -84,6 +84,7 @@ static void clean_name(char* name) {
 }
 
 static int compare_inode_names(const char* name1, const char* name2) {
+    // 6 >5 so the name will always end with '\0' to make this method safe
     char temp1[6] = {0};
     char temp2[6] = {0};
     
@@ -91,7 +92,6 @@ static int compare_inode_names(const char* name1, const char* name2) {
     strncpy(temp1, name1, 5);
     strncpy(temp2, name2, 5);
     
-    // Remove trailing spaces
     for (int i = 4; i >= 0; i--) {
         if (temp1[i] == ' ') temp1[i] = '\0';
         if (temp2[i] == ' ') temp2[i] = '\0';
@@ -128,7 +128,6 @@ static int check_consistency() {
     // Check 1: Verify free inodes
     for (int i = 0; i < 126; i++) {
         if (!(superblock.inode[i].used_size & 0x80)) {
-            // Free inode should have no allocated blocks
             if (superblock.inode[i].start_block != 0) {
                 return 1;
             }
@@ -195,32 +194,30 @@ static int check_consistency() {
     }
 
     // Check 6: Block allocation consistency
-    {
-        int block_usage[128] = {0};
-        block_usage[0] = 1;  // Superblock
+    int block_usage[128] = {0};
+    block_usage[0] = 1;  // Superblock
 
-        for (int i = 0; i < 126; i++) {
-            if ((superblock.inode[i].used_size & 0x80) && 
-                !(superblock.inode[i].dir_parent & 0x80)) {
-                int size = superblock.inode[i].used_size & 0x7F;
-                int start = superblock.inode[i].start_block;
+    for (int i = 0; i < 126; i++) {
+        if ((superblock.inode[i].used_size & 0x80) && 
+            !(superblock.inode[i].dir_parent & 0x80)) {
+            int size = superblock.inode[i].used_size & 0x7F;
+            int start = superblock.inode[i].start_block;
                 
-                for (int b = start; b < start + size && b < 128; b++) {
-                    if (b >= 1) block_usage[b]++;
-                }
-            }
-        }
-
-        for (int i = 0; i < 128; i++) {
-            int is_used = get_block_bit(i);
-            if (i == 0) {
-                if (!is_used) return 6;
-            } else if (is_used != (block_usage[i] > 0)) {
-                return 6;
+            for (int b = start; b < start + size && b < 128; b++) {
+                if (b >= 1) block_usage[b]++;
             }
         }
     }
 
+    for (int i = 0; i < 128; i++) {
+        int is_used = get_block_bit(i);
+        if (i == 0) {
+            if (!is_used) return 6;
+        } else if (is_used != (block_usage[i] > 0)) {
+            return 6;
+        }
+    }
+    
     return 0;
 }
 
@@ -268,14 +265,14 @@ void fs_create(char name[5], int size) {
 
     // Modify the free block finding logic
     int start_block = 0;
-    if (size > 0) {  // If it's a file
+    if (size > 0) {  // File
         start_block = find_contiguous_blocks(size);
         if (start_block == -1) {
             fprintf(stderr, "Error: Cannot allocate %d blocks on %s\n", size, current_disk);
             return;
         }
 
-        // Mark blocks as used immediately after finding them
+        // Mark blocks as used
         for (int i = 0; i < size; i++) {
             set_block_bit(start_block + i, 1);
         }
@@ -288,7 +285,6 @@ void fs_create(char name[5], int size) {
     superblock.inode[inode_idx].dir_parent = (size == 0 ? 0x80 : 0) | 
                                            (current_dir_inode == 0 ? 127 : current_dir_inode);
 
-    // Write superblock back to disk immediately
     write_superblock();
 }
 
@@ -325,7 +321,6 @@ void fs_delete(char name[5], int inode_idx) {
             }
         }
     } else {
-        // Free blocks and zero them out
         int start = superblock.inode[target_inode].start_block;
         int size = superblock.inode[target_inode].used_size & 0x7F;
         
@@ -359,7 +354,6 @@ void fs_read(char name[5], int block_num) {
         return;
     }
 
-    // Find the file
     int found = -1;
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
@@ -397,7 +391,6 @@ void fs_write(char name[5], int block_num) {
         return;
     }
 
-    // Find the file
     int found = -1;
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
@@ -476,8 +469,7 @@ void fs_ls(void) {
     for (int i = 0; i < 126; i++) {
         if ((superblock.inode[i].used_size & 0x80) && 
             (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode) {
-            if (superblock.inode[i].dir_parent & 0x80) {
-                // Directory
+            if (superblock.inode[i].dir_parent & 0x80) { // Directory
                 int dir_items = 0;
                 for (int j = 0; j < 126; j++) {
                     if ((superblock.inode[j].used_size & 0x80) && 
@@ -486,8 +478,7 @@ void fs_ls(void) {
                     }
                 }
                 printf("%-5s %3d\n", superblock.inode[i].name, dir_items + 2);
-            } else {
-                // File
+            } else { // File
                 printf("%-5s %3d KB\n", superblock.inode[i].name, 
                        superblock.inode[i].used_size & 0x7F);
             }
@@ -578,12 +569,11 @@ void fs_resize(char name[5], int new_size) {
         // Shrink file
         FILE *disk = fopen(current_disk, "r+b");
         if (disk) {
-            // Zero out freed blocks
             char zero_block[1024] = {0};
             for (int i = new_size; i < current_size; i++) {
                 fseek(disk, (start_block + i) * 1024, SEEK_SET);
                 fwrite(zero_block, 1024, 1, disk);
-                set_block_bit(start_block + i, 0);  // Mark block as free
+                set_block_bit(start_block + i, 0);  
             }
             fclose(disk);
         }
@@ -687,7 +677,7 @@ void fs_cd(char name[5]) {
     }
 
     if (strcmp(name, ".") == 0) {
-        return;  // Stay in current directory
+        return;  
     }
     
     if (strcmp(name, "..") == 0) {
@@ -737,17 +727,12 @@ int main(int argc, char *argv[]) {
     
     while (fgets(line, sizeof(line), cmd_file)) {
         line_num++;
-        
-        // Remove newline
-        line[strcspn(line, "\n")] = 0;
-        
-        // Skip empty lines
-        if (line[0] == '\0') continue;
+        line[strcspn(line, "\n")] = 0; // Remove newline
+        if (line[0] == '\0') continue; // Skip empty lines
 
         char cmd = line[0];
         char args[1024];
         
-        // Extract arguments
         if (strlen(line) > 2) {
             strcpy(args, line + 2);
         } else {
@@ -817,7 +802,7 @@ int main(int argc, char *argv[]) {
 
             case 'B':  // Buffer
                 {
-                    if (strlen(line) < 2) {  // Just "B" with no content
+                    if (strlen(line) < 2) {  // Just "B" 
                         memset(buffer, 0, 1024);
                     } else {
                         char *buffer_content = line + 2;  // Skip "B "
