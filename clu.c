@@ -352,6 +352,43 @@ void fs_delete(char name[5], int inode_idx) {
     }
 }
 
+void fs_read(char name[5], int block_num) {
+    if (!current_disk) {
+        fprintf(stderr, "Error: No file system is mounted\n");
+        return;
+    }
+
+    // Find the file
+    int found = 0;
+    for (int i = 0; i < 126; i++) {
+        if ((superblock.inode[i].used_size & 0x80) && 
+            !(superblock.inode[i].dir_parent & 0x80) &&
+            (superblock.inode[i].dir_parent & 0x7F) == current_dir_inode &&
+            compare_inode_names(superblock.inode[i].name, name)) {
+            
+            int size = superblock.inode[i].used_size & 0x7F;
+            if (block_num < 0 || block_num >= size) {
+                fprintf(stderr, "Error: %s does not have block %d\n", name, block_num);
+                return;
+            }
+
+            // Read block into buffer
+            FILE *disk = fopen(current_disk, "rb");
+            if (disk) {
+                fseek(disk, (superblock.inode[i].start_block + block_num) * 1024, SEEK_SET);
+                fread(buffer, 1024, 1, disk);
+                fclose(disk);
+            }
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found) {
+        fprintf(stderr, "Error: File %s does not exist\n", name);
+    }
+}
+
 void fs_write(char name[5], int block_num) {
     if (!current_disk) {
         fprintf(stderr, "Error: No file system is mounted\n");
@@ -387,8 +424,10 @@ void fs_write(char name[5], int block_num) {
 }
 
 void fs_buff(char buff[1024]) {
-    memset(buffer, 0, 1024);
-    strncpy(buffer, buff, 1024);
+    memset(buffer, 0, 1024); 
+    if (buff) {
+        strncpy(buffer, buff, 1024);
+    }
 }
 
 void fs_ls(void) {
@@ -795,12 +834,16 @@ int main(int argc, char *argv[]) {
 
             case 'B':  // Buffer
                 {
-                    char *buffer_content = line + 2;  // Skip "B "
-                    if (strlen(buffer_content) > 1024) {
-                        fprintf(stderr, "Command Error: %s, %d\n", argv[1], line_num);
-                        continue;
+                    if (strlen(line) < 2) {  // Just "B" with no content
+                        memset(buffer, 0, 1024);
+                    } else {
+                        char *buffer_content = line + 2;  // Skip "B "
+                        if (strlen(buffer_content) > 1024) {
+                            fprintf(stderr, "Command Error: %s, %d\n", argv[1], line_num);
+                            continue;
+                        }
+                        fs_buff(buffer_content);
                     }
-                    fs_buff(buffer_content);
                 }
                 break;
 
