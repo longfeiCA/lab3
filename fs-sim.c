@@ -72,7 +72,6 @@ static void clean_name(char* name) {
     name[j] = '\0';
 }
 
-// Helper function to compare file/directory names
 static int compare_inode_names(const char* name1, const char* name2) {
     char temp1[6] = {0};
     char temp2[6] = {0};
@@ -90,7 +89,6 @@ static int compare_inode_names(const char* name1, const char* name2) {
     return strcmp(temp1, temp2) == 0;
 }
 
-// Helper functions for bit manipulation
 static void set_block_bit(int block_num, int value) {
     int byte_idx = block_num / 8;
     int bit_idx = block_num % 8;
@@ -107,7 +105,6 @@ static int get_block_bit(int block_num) {
     return (superblock.free_block_list[byte_idx] & (1 << bit_idx)) != 0;
 }
 
-// Helper function to write superblock to disk
 static void write_superblock() {
     FILE *disk = fopen(current_disk, "r+b");
     if (disk) {
